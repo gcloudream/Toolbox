@@ -345,7 +345,8 @@ private enum class Screen {
     DOUSHA_BAO,
     IMAGE_COMPRESS,
     MEMORY_TREE,
-    MARQUEE
+    MARQUEE,
+    API_STATS
 }
 
 private data class ToolItem(
@@ -562,7 +563,8 @@ private fun AppRoot(
             onPomodoroStart = { navigateTo(Screen.POMODORO) },
             onMarqueeStart = { navigateTo(Screen.MARQUEE) },
             onImageCompress = { navigateTo(Screen.IMAGE_COMPRESS) },
-            onMemoryTreeStart = { navigateTo(Screen.MEMORY_TREE) }
+            onMemoryTreeStart = { navigateTo(Screen.MEMORY_TREE) },
+            onApiStatsStart = { navigateTo(Screen.API_STATS) }
         )
         Screen.POMODORO -> PomodoroHome(
             state = pomodoroState,
@@ -581,6 +583,9 @@ private fun AppRoot(
             onBack = { popBackStack() }
         )
         Screen.MEMORY_TREE -> MemoryTreeScreen(
+            onBack = { popBackStack() }
+        )
+        Screen.API_STATS -> ApiStatsScreen(
             onBack = { popBackStack() }
         )
     }
@@ -604,7 +609,8 @@ private fun HomeScreen(
     onPomodoroStart: () -> Unit,
     onMarqueeStart: () -> Unit,
     onImageCompress: () -> Unit,
-    onMemoryTreeStart: () -> Unit
+    onMemoryTreeStart: () -> Unit,
+    onApiStatsStart: () -> Unit
 ) {
     val gradient = remember {
         Brush.verticalGradient(
@@ -618,7 +624,8 @@ private fun HomeScreen(
         onPomodoroStart,
         onMarqueeStart,
         onImageCompress,
-        onMemoryTreeStart
+        onMemoryTreeStart,
+        onApiStatsStart
     ) {
         listOf(
             ToolItem(
@@ -632,6 +639,12 @@ private fun HomeScreen(
                 description = "ChatGPT 风格的 AI 问答",
                 enabled = true,
                 onClick = onCChatStart
+            ),
+            ToolItem(
+                title = "API 统计",
+                description = "查询 Key 的费用与模型用量",
+                enabled = true,
+                onClick = onApiStatsStart
             ),
             ToolItem(
                 title = "番茄时钟",
@@ -4754,6 +4767,483 @@ private fun readConnectionBody(connection: HttpURLConnection): String {
     }
     if (stream == null) return ""
     return stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+}
+
+private enum class ApiStatsPeriod(val label: String, val apiValue: String) {
+    DAILY("今日", "daily"),
+    MONTHLY("本月", "monthly")
+}
+
+private data class ApiStatsLimits(
+    val dailyCostLimit: Double,
+    val currentDailyCost: Double
+)
+
+private data class ApiModelStat(
+    val model: String,
+    val requests: Long,
+    val inputTokens: Long,
+    val outputTokens: Long,
+    val cacheReadTokens: Long,
+    val totalCostLabel: String
+)
+
+private data class ApiStatsSummary(
+    val name: String,
+    val isActive: Boolean,
+    val permissions: String,
+    val limits: ApiStatsLimits,
+    val models: List<ApiModelStat>,
+    val period: ApiStatsPeriod
+)
+
+@Composable
+private fun ApiStatsScreen(onBack: () -> Unit) {
+    var apiKey by remember { mutableStateOf("") }
+    var period by rememberSaveable { mutableStateOf(ApiStatsPeriod.DAILY) }
+    var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var summary by remember { mutableStateOf<ApiStatsSummary?>(null) }
+    val scope = rememberCoroutineScope()
+
+    val gradient = remember {
+        Brush.verticalGradient(colors = listOf(CChatBgTop, CChatBgBottom))
+    }
+    val canQuery = apiKey.trim().isNotBlank() && !isLoading
+
+    fun submitQuery(selectedPeriod: ApiStatsPeriod) {
+        val trimmedKey = apiKey.trim()
+        if (trimmedKey.isBlank() || isLoading) return
+        isLoading = true
+        errorMessage = null
+        scope.launch {
+            val result = fetchApiStatsSummary(trimmedKey, selectedPeriod)
+            isLoading = false
+            result.onSuccess { data ->
+                summary = data
+            }.onFailure { error ->
+                errorMessage = error.message?.takeIf { it.isNotBlank() } ?: "查询失败"
+            }
+        }
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(gradient)
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item {
+            ApiStatsTopBar(onBack = onBack)
+        }
+        item {
+            ApiStatsSectionCard(
+                title = "API Key 查询",
+                subtitle = "仅用于查询，不会保存"
+            ) {
+                OutlinedTextField(
+                    value = apiKey,
+                    onValueChange = { apiKey = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text(text = "请输入 API Key (cr_...)") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = CChatAccent,
+                        unfocusedBorderColor = CChatLine,
+                        focusedTextColor = CChatText,
+                        unfocusedTextColor = CChatText,
+                        cursorColor = CChatAccent,
+                        focusedContainerColor = CChatSurface,
+                        unfocusedContainerColor = CChatSurface
+                    )
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ApiStatsPeriod.values().forEach { option ->
+                        FilterChip(
+                            selected = period == option,
+                            onClick = {
+                                period = option
+                                if (summary != null) {
+                                    submitQuery(option)
+                                }
+                            },
+                            label = { Text(option.label) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = CChatAccent,
+                                selectedLabelColor = Color.White,
+                                containerColor = CChatCopyBg,
+                                labelColor = CChatText
+                            )
+                        )
+                    }
+                }
+                Button(
+                    onClick = { submitQuery(period) },
+                    enabled = canQuery,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = CChatAccent,
+                        contentColor = Color.White,
+                        disabledContainerColor = CChatLine,
+                        disabledContentColor = CChatMuted
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(text = if (isLoading) "查询中..." else "查询统计")
+                }
+            }
+        }
+
+        if (isLoading) {
+            item {
+                ApiStatsSectionCard(title = "正在获取数据") {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = CChatAccent
+                    )
+                    Text(text = "正在拉取统计信息，请稍候", color = CChatMuted, fontSize = 12.sp)
+                }
+            }
+        }
+
+        if (errorMessage != null) {
+            item {
+                ApiStatsSectionCard(title = "查询失败") {
+                    Text(
+                        text = errorMessage ?: "",
+                        color = Color(0xFFB00020),
+                        fontSize = 13.sp
+                    )
+                }
+            }
+        }
+
+        summary?.let { data ->
+            item {
+                ApiStatsSectionCard(title = "API Key 信息") {
+                    ApiStatsMetricRow("名称", data.name)
+                    ApiStatsMetricRow("状态", if (data.isActive) "活跃" else "停用")
+                    ApiStatsMetricRow("权限", data.permissions.ifBlank { "未知" })
+                }
+            }
+            item {
+                ApiStatsSectionCard(title = "每日费用限制") {
+                    val limitText = if (data.limits.dailyCostLimit > 0) {
+                        formatApiCost(data.limits.dailyCostLimit)
+                    } else {
+                        "未设置"
+                    }
+                    val currentText = formatApiCost(data.limits.currentDailyCost)
+                    ApiStatsMetricRow("当前/上限", "$currentText / $limitText")
+                }
+            }
+            item {
+                ApiStatsSectionCard(
+                    title = "模型使用统计",
+                    subtitle = "时间范围：${data.period.label}"
+                ) {
+                    if (data.models.isEmpty()) {
+                        Text(text = "暂无数据", color = CChatMuted, fontSize = 12.sp)
+                    }
+                }
+            }
+            items(data.models) { model ->
+                ApiStatsModelCard(model = model)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ApiStatsTopBar(onBack: () -> Unit) {
+    Box(modifier = Modifier.fillMaxWidth()) {
+        TextButton(onClick = onBack) {
+            Text(text = "返回", color = CChatText)
+        }
+        Column(
+            modifier = Modifier.align(Alignment.Center),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "API 统计",
+                color = CChatText,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Serif
+            )
+            Text(
+                text = "查询费用限制与模型用量",
+                color = CChatMuted,
+                fontSize = 12.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun ApiStatsSectionCard(
+    title: String,
+    subtitle: String? = null,
+    content: @Composable () -> Unit
+) {
+    Surface(
+        color = CChatSurface,
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, CChatLine),
+        tonalElevation = 3.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            content = {
+                Text(
+                    text = title,
+                    color = CChatText,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (subtitle != null) {
+                    Text(
+                        text = subtitle,
+                        color = CChatMuted,
+                        fontSize = 12.sp
+                    )
+                }
+                content()
+            }
+        )
+    }
+}
+
+@Composable
+private fun ApiStatsMetricRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(text = label, color = CChatMuted, fontSize = 12.sp)
+        Text(text = value, color = CChatText, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun ApiStatsModelCard(model: ApiModelStat) {
+    Surface(
+        color = CChatSurface,
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, CChatLine),
+        tonalElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = model.model,
+                    color = CChatText,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = model.totalCostLabel,
+                    color = CChatAccent,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            ApiStatsMetricRow("请求次数", formatCompactNumber(model.requests))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                ApiStatsMetricItem(
+                    label = "输入 Token",
+                    value = formatCompactNumber(model.inputTokens),
+                    modifier = Modifier.weight(1f)
+                )
+                ApiStatsMetricItem(
+                    label = "输出 Token",
+                    value = formatCompactNumber(model.outputTokens),
+                    modifier = Modifier.weight(1f)
+                )
+                ApiStatsMetricItem(
+                    label = "缓存读取",
+                    value = formatCompactNumber(model.cacheReadTokens),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ApiStatsMetricItem(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier) {
+        Text(text = label, color = CChatMuted, fontSize = 11.sp)
+        Text(text = value, color = CChatText, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+private const val API_STATS_KEY_ID_ENDPOINT = "http://card.fishtrip.top/apiStats/api/get-key-id"
+private const val API_STATS_USER_STATS_ENDPOINT = "http://card.fishtrip.top/apiStats/api/user-stats"
+private const val API_STATS_MODEL_STATS_ENDPOINT = "http://card.fishtrip.top/apiStats/api/user-model-stats"
+
+private suspend fun fetchApiStatsSummary(
+    apiKey: String,
+    period: ApiStatsPeriod
+): Result<ApiStatsSummary> {
+    return withContext(Dispatchers.IO) {
+        try {
+            val apiId = requestApiStatsId(apiKey)
+            val statsBody = postApiStatsJson(
+                API_STATS_USER_STATS_ENDPOINT,
+                JSONObject().put("apiId", apiId)
+            )
+            val statsJson = JSONObject(statsBody)
+            if (!statsJson.optBoolean("success")) {
+                val message = extractApiStatsMessage(statsJson) ?: "统计查询失败"
+                return@withContext Result.failure(IOException(message))
+            }
+            val data = statsJson.optJSONObject("data")
+                ?: return@withContext Result.failure(IOException("统计数据缺失"))
+            val limits = parseApiStatsLimits(data.optJSONObject("limits"))
+            val name = data.optString("name").ifBlank { "未命名" }
+            val isActive = data.optBoolean("isActive", false)
+            val permissions = data.optString("permissions")
+
+            val modelBody = postApiStatsJson(
+                API_STATS_MODEL_STATS_ENDPOINT,
+                JSONObject()
+                    .put("apiId", apiId)
+                    .put("period", period.apiValue)
+            )
+            val modelJson = JSONObject(modelBody)
+            if (!modelJson.optBoolean("success")) {
+                val message = extractApiStatsMessage(modelJson) ?: "模型统计查询失败"
+                return@withContext Result.failure(IOException(message))
+            }
+            val models = parseApiStatsModels(modelJson.optJSONArray("data"))
+
+            Result.success(
+                ApiStatsSummary(
+                    name = name,
+                    isActive = isActive,
+                    permissions = permissions,
+                    limits = limits,
+                    models = models,
+                    period = period
+                )
+            )
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+}
+
+private fun requestApiStatsId(apiKey: String): String {
+    val body = postApiStatsJson(
+        API_STATS_KEY_ID_ENDPOINT,
+        JSONObject().put("apiKey", apiKey)
+    )
+    val json = JSONObject(body)
+    if (!json.optBoolean("success")) {
+        val message = extractApiStatsMessage(json) ?: "API Key 无效"
+        throw IOException(message)
+    }
+    val id = json.optJSONObject("data")?.optString("id").orEmpty()
+    if (id.isBlank()) {
+        throw IOException("API Key 无效")
+    }
+    return id
+}
+
+private fun postApiStatsJson(endpoint: String, payload: JSONObject): String {
+    val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+        requestMethod = "POST"
+        connectTimeout = 15000
+        readTimeout = 20000
+        setRequestProperty("Content-Type", "application/json")
+        setRequestProperty("Accept", "application/json")
+        doOutput = true
+    }
+    connection.outputStream.use { output ->
+        output.write(payload.toString().toByteArray(Charsets.UTF_8))
+    }
+    if (connection.responseCode !in 200..299) {
+        val responseBody = readConnectionBody(connection)
+        throw IOException(formatCChatHttpError(connection.responseCode, responseBody))
+    }
+    return readConnectionBody(connection)
+}
+
+private fun extractApiStatsMessage(json: JSONObject): String? {
+    return json.optString("message").takeIf { it.isNotBlank() }
+        ?: json.optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
+}
+
+private fun parseApiStatsLimits(limitsJson: JSONObject?): ApiStatsLimits {
+    if (limitsJson == null) {
+        return ApiStatsLimits(dailyCostLimit = 0.0, currentDailyCost = 0.0)
+    }
+    return ApiStatsLimits(
+        dailyCostLimit = limitsJson.optDouble("dailyCostLimit", 0.0),
+        currentDailyCost = limitsJson.optDouble("currentDailyCost", 0.0)
+    )
+}
+
+private fun parseApiStatsModels(models: JSONArray?): List<ApiModelStat> {
+    if (models == null) return emptyList()
+    val items = mutableListOf<ApiModelStat>()
+    for (i in 0 until models.length()) {
+        val item = models.optJSONObject(i) ?: continue
+        val model = item.optString("model").ifBlank { "未知模型" }
+        val requests = item.optLong("requests", 0L)
+        val inputTokens = item.optLong("inputTokens", 0L)
+        val outputTokens = item.optLong("outputTokens", 0L)
+        val cacheReadTokens = item.optLong("cacheReadTokens", 0L)
+        val formattedTotal = item.optJSONObject("formatted")
+            ?.optString("total")
+            ?.takeIf { it.isNotBlank() }
+        val totalCost = item.optJSONObject("costs")?.optDouble("total", Double.NaN) ?: Double.NaN
+        val totalCostLabel = formattedTotal
+            ?: if (!totalCost.isNaN()) formatApiCost(totalCost) else "--"
+        items.add(
+            ApiModelStat(
+                model = model,
+                requests = requests,
+                inputTokens = inputTokens,
+                outputTokens = outputTokens,
+                cacheReadTokens = cacheReadTokens,
+                totalCostLabel = totalCostLabel
+            )
+        )
+    }
+    return items
+}
+
+private fun formatApiCost(value: Double): String {
+    if (!value.isFinite()) return "$0.00"
+    return String.format(Locale.US, "$%.2f", value)
+}
+
+private fun formatCompactNumber(value: Long): String {
+    val absValue = kotlin.math.abs(value.toDouble())
+    val (divisor, suffix) = when {
+        absValue >= 1_000_000_000 -> 1_000_000_000.0 to "B"
+        absValue >= 1_000_000 -> 1_000_000.0 to "M"
+        absValue >= 1_000 -> 1_000.0 to "K"
+        else -> return value.toString()
+    }
+    val formatted = String.format(Locale.US, "%.1f", value / divisor)
+    val cleaned = formatted.removeSuffix(".0")
+    return "$cleaned$suffix"
 }
 
 @Composable
