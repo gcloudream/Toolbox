@@ -87,6 +87,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -197,6 +198,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         createPomodoroNotificationChannels(this)
+        loadCChatConfig(this)
 
         setContent {
             ChenTheme {
@@ -391,10 +393,11 @@ private const val CCHAT_DEFAULT_REASONING_EFFORT = "High"
 private const val CCHAT_DEFAULT_DISABLE_STORAGE = true
 private const val CCHAT_DEFAULT_REQUIRES_AUTH = true
 private const val CCHAT_DEFAULT_AUTH_METHOD = "apikey"
-private const val CCHAT_DEFAULT_BASE_URL = "http://card.fishtrip.top/openai"
+private const val CCHAT_DEFAULT_BASE_URL = "https://api-vip.codex-for.me/v1"
 private const val CCHAT_DEFAULT_WIRE_API = "responses"
 private const val CCHAT_DEFAULT_ENV_KEY =
-    "cr_0856bce4c19b764c079b3b8ab0f731c013c5b1bf8dd2e434c217e4ab9b861eff"       
+    "clp_3a96bd1780f4ef2837be01c30bbecbe1cf902238861b30d7d3c4b4bc17e89317"
+private const val CCHAT_DEFAULT_INSTRUCTIONS = "You are a helpful assistant."
 private const val CCHAT_DEFAULT_SELECTED_MODEL = "gpt-5.2-codex"
 private val CCHAT_DEFAULT_MODELS = listOf("gpt-5.2-codex", "gpt-5.2")
 
@@ -2649,6 +2652,7 @@ private fun DoushabaoScreen(onBack: () -> Unit) {
     var isThinking by rememberSaveable { mutableStateOf(false) }
     var streamingMessageId by rememberSaveable { mutableIntStateOf(-1) }
     val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
 
     LaunchedEffect(Unit) {
         val stored = withContext(Dispatchers.IO) {
@@ -2665,6 +2669,11 @@ private fun DoushabaoScreen(onBack: () -> Unit) {
             )
         }
         nextId = (stored.maxOfOrNull { it.id }?.toInt() ?: 0) + 1
+    }
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.lastIndex)
+        }
     }
 
     DsbBackground(
@@ -2698,6 +2707,7 @@ private fun DoushabaoScreen(onBack: () -> Unit) {
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(horizontal = 16.dp, vertical = 12.dp),
+                        state = listState,
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         items(messages, key = { it.id }) { message ->
@@ -4230,6 +4240,7 @@ private fun buildCChatPayload(
 ): String {
     val payload = JSONObject()
     payload.put("model", model)
+    payload.put("instructions", CCHAT_DEFAULT_INSTRUCTIONS)
     payload.put("input", buildCChatInput(messages))
     payload.put("store", !config.disableResponseStorage)
     payload.put("stream", true)
@@ -4334,6 +4345,7 @@ private fun buildDsbPayload(
 ): String {
     val payload = JSONObject()
     payload.put("model", model)
+    payload.put("instructions", CCHAT_DEFAULT_INSTRUCTIONS)
     payload.put("input", buildDsbInput(messages))
     payload.put("store", !config.disableResponseStorage)
     payload.put("stream", stream)
